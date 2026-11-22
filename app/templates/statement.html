@@ -36,6 +36,10 @@
               <input type="hidden" name="version" value="{{ s.version }}">
               <button class="small" type="submit">锁定此行</button>
             </form>
+            <form method="post" action="{{ url_for('trial_lock', row_key=row.key) }}">
+              <input type="hidden" name="version" value="{{ s.version }}">
+              <button class="small secondary" type="submit">试锁影响</button>
+            </form>
           {% endif %}
         </td>
       </tr>

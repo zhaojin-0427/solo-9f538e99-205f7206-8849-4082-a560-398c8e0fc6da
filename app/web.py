@@ -9,7 +9,8 @@ from flask import (Flask, flash, redirect, render_template, request, url_for)
 from .csvio import CsvError, parse_csv
 from .db import init_db
 from .service import (AppError, ConflictError, InfeasibleError, ValidationError,
-                      correct_statement, load_statement, lock_row, upload_statement)
+                      correct_statement, load_statement, lock_row, trial_lock_impact,
+                      upload_statement)
 
 
 def create_app(db_path: str | None = None) -> Flask:
@@ -90,6 +91,21 @@ def create_app(db_path: str | None = None) -> Flask:
         else:
             flash("已按当前所见版锁定该院系行。", "success")
         return redirect(url_for("statement_page"))
+
+    @app.post("/trial-lock/<row_key>")
+    def trial_lock(row_key: str):
+        try:
+            expected_version = int(request.form.get("version", ""))
+        except ValueError:
+            flash("缺少版号，请刷新页面后重试。", "error")
+            return redirect(url_for("statement_page"))
+        try:
+            result = trial_lock_impact(app.config["DB_PATH"], row_key, expected_version)
+        except AppError as exc:
+            # 版号已变等情况：只提示刷新，不展示基于旧版的结果
+            flash(str(exc), "error")
+            return redirect(url_for("statement_page"))
+        return render_template("trial.html", r=result, v=build_trial_view(result))
 
     @app.get("/correct")
     def correct_page():
@@ -185,6 +201,38 @@ def _seed_sample(db_path: str):
                          parsed.amounts, None)
     except AppError:
         pass
+
+
+def build_trial_view(result):
+    """整理试锁结果，并对示例表独立复算横竖加平（不信任求解结果直接展示）。"""
+    alt = result["alt"]
+    alt_view = None
+    if alt is not None:
+        sol = alt["solution"]
+        P = sol["P"]
+        rows, cols = result["rows"], result["cols"]
+        matrix = []
+        for i, row in enumerate(rows):
+            matrix.append({
+                "key": row.key,
+                "label": row.label,
+                "locked": row.key in result["locked_keys"],
+                "cells": [{"col_key": c.key, "value": P[i][j],
+                           "picked": (row.key == alt["row_key"]
+                                      and c.key == alt["col_key"])}
+                          for j, c in enumerate(cols)],
+                "subtotal": sol["rows"][i],
+            })
+        row_sums = [sum(cell["value"] for cell in m["cells"]) for m in matrix]
+        col_sums = [sum(matrix[i]["cells"][j]["value"] for i in range(len(matrix)))
+                    for j in range(len(cols))]
+        ok = (all(rs == m["subtotal"] for rs, m in zip(row_sums, matrix))
+              and col_sums == sol["cols"]
+              and sum(row_sums) == sol["total"] == sum(col_sums))
+        alt_view = {"matrix": matrix, "col_totals": sol["cols"], "total": sol["total"],
+                    "ok": ok, "row_label": alt["row_label"],
+                    "col_label": alt["col_label"], "lost": alt["lost"]}
+    return {"alt": alt_view}
 
 
 def build_view(stmt):

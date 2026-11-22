@@ -47,6 +47,11 @@ button, .button {
 }
 button:hover, .button:hover { background: #174a7c; }
 button.small { padding: 4px 10px; font-size: 12px; }
+button.secondary { background: #e4e9f0; color: #1f2933; }
+button.secondary:hover { background: #cfd8e3; }
+.lock-cell form + form { margin-top: 4px; }
+table.grid td.picked { background: #fde68a; font-weight: 700; }
+h2 { font-size: 16px; margin: 18px 0 8px; }
 .button.secondary { background: #e4e9f0; color: #1f2933; }
 .actions { display: flex; gap: 10px; margin-top: 16px; }
 .stack { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }

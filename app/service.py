@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .db import connect, now_iso
-from .rounding import ceil_wan, floor_wan, round_wan, solve_display
+from .rounding import UNIT, ceil_wan, floor_wan, round_wan, solve_display
 
 
 class AppError(Exception):
@@ -294,6 +294,124 @@ def lock_row(db_path: str, row_key: str, expected_version: int):
         raise SaveError("锁定保存失败，数据未变更。") from exc
     finally:
         conn.close()
+
+
+def analyze_trial_impact(cells, locks, trial_row, trial_lock, compute=solve_display):
+    """纯函数：假定 trial_row 按 trial_lock（行小计, 公示值列表）锁定后的影响。
+
+    返回受影响的未锁定格 [(i, j, 唯一可取万元值)]：这些格在试锁前向上、向下
+    取整都可行，试锁后只剩唯一取法。若存在受影响格，alt 给出一个试锁前的完整
+    可行解，其中首个受影响格取“试锁后不再可行”的另一值。
+    前后均遵守整表取整、横竖加平与已有锁定规则。
+    """
+    trial_locks = dict(locks)
+    trial_locks[trial_row] = trial_lock
+    affected = []
+    for i in range(len(cells)):
+        if i in trial_locks:
+            continue  # 只看其他未锁定行
+        for j in range(len(cells[0])):
+            amount = cells[i][j]
+            if amount % UNIT == 0:
+                continue  # 整万格取整唯一，本就无调整余地
+            down, up = amount // UNIT, amount // UNIT + 1
+            if compute(cells, locks, {(i, j): down}) is None:
+                continue
+            if compute(cells, locks, {(i, j): up}) is None:
+                continue
+            # 试锁前两可；试锁后还剩几种取法？
+            down_ok = compute(cells, trial_locks, {(i, j): down}) is not None
+            up_ok = compute(cells, trial_locks, {(i, j): up}) is not None
+            if down_ok == up_ok:
+                # 仍两可（无影响）。都不可行理论上不会发生——当前公示表本身就是
+                # trial_locks 的可行解——兜底忽略。
+                continue
+            affected.append((i, j, down if down_ok else up))
+    alt = None
+    if affected:
+        i, j, unique = affected[0]
+        down = cells[i][j] // UNIT
+        lost = down + 1 if unique == down else down
+        solution = compute(cells, locks, {(i, j): lost})
+        if solution is not None:
+            alt = {"picked": (i, j), "lost": lost, "solution": solution}
+    return {"affected": affected, "alt": alt}
+
+
+def trial_lock_impact(db_path: str, row_key: str, expected_version: int,
+                      compute: Callable = solve_display):
+    """试锁影响分析：假定某未锁定院系按当前所见公示值与小计锁定，列出因此
+    失去取整余地的其他未锁定格。
+
+    只读计算：不改表、不保存锁定；核算期间其他请求仍可更正、替换底表或锁定。
+    返回前若版号已变，抛 ConflictError——调用方只提示刷新，不展示过时结果。
+    """
+    conn = connect(db_path)
+    try:
+        version, base_version = _meta(conn)
+        rows = _read_rows(conn)
+        if not rows:
+            raise ConflictError("报表不存在，请刷新页面。")
+        if version != expected_version:
+            raise ConflictError("版号已过期（有人刚刚更新或锁定），请刷新页面后重试。")
+        cols = _read_cols(conn)
+        locks = _read_locks(conn)
+        base = {}
+        for r in conn.execute("SELECT row_key, col_key, amount_yuan FROM base_cell"):
+            base[(r["row_key"], r["col_key"])] = r["amount_yuan"]
+        public = _public_matrix(conn, rows, cols)
+        row_totals = {r["row_key"]: r["subtotal_wan"] for r in conn.execute(
+            "SELECT row_key, subtotal_wan FROM public_row")}
+    finally:
+        conn.close()
+    index = {r.key: i for i, r in enumerate(rows)}
+    if row_key not in index:
+        raise ValidationError("院系行不存在，请刷新页面。")
+    if row_key in locks:
+        raise ConflictError("该院系行已锁定，请刷新页面。")
+    cells = [[base[(r.key, c.key)] for c in cols] for r in rows]
+    lock_map = {i: (locks[r.key]["subtotal"], locks[r.key]["cells"])
+                for i, r in enumerate(rows) if r.key in locks}
+    trial_row = index[row_key]
+    trial_lock = (row_totals[row_key], [public[(row_key, c.key)] for c in cols])
+    # 纯计算，不写库；期间更正/换表/锁定均可正常落库
+    result = analyze_trial_impact(cells, lock_map, trial_row, trial_lock, compute=compute)
+    conn = connect(db_path)
+    try:
+        version_after, _ = _meta(conn)
+    finally:
+        conn.close()
+    if version_after != version:
+        raise ConflictError("核算期间报表已更新（版号已变），请刷新后重试。")
+    affected = [
+        {"row_key": rows[i].key, "row_label": rows[i].label,
+         "col_key": cols[j].key, "col_label": cols[j].label,
+         "floor": cells[i][j] // UNIT, "ceil": cells[i][j] // UNIT + 1,
+         "unique": unique}
+        for i, j, unique in result["affected"]
+    ]
+    alt = None
+    if result["alt"] is not None:
+        i, j = result["alt"]["picked"]
+        alt = {
+            "row_key": rows[i].key, "row_label": rows[i].label,
+            "col_key": cols[j].key, "col_label": cols[j].label,
+            "lost": result["alt"]["lost"],
+            "solution": result["alt"]["solution"],
+        }
+    return {
+        "version": version,
+        "base_version": base_version,
+        "rows": rows,
+        "cols": cols,
+        "locked_keys": set(locks),
+        "row_key": row_key,
+        "row_label": rows[trial_row].label,
+        "trial_cells": list(trial_lock[1]),
+        "trial_subtotal": trial_lock[0],
+        "affected": affected,
+        "alt": alt,
+    }
 
 
 def _snapshot(db_path: str):

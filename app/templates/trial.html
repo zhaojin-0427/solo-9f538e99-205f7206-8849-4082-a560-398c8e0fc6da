@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}试锁影响 · 科研支出万元公示{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="headline">
+    <h1>试锁影响分析：{{ r.row_label }}</h1>
+    <span class="version">基于版号 {{ r.version }} · 底表版号 {{ r.base_version }}</span>
+  </div>
+  <p class="muted">假定「{{ r.row_label }}」按当前所见版锁定：公示值
+    {{ r.trial_cells|join('、') }} 万元，行小计 {{ r.trial_subtotal }} 万元。
+    下面列出该假定对其他未锁定格取整余地的影响（前后均满足整表取整、横竖加平与已有锁定）。
+    <strong>试锁为只读分析：未改动公示表，也未保存锁定。</strong></p>
+
+  {% if r.affected %}
+  <h2>失去取整余地的格（{{ r.affected|length }} 个）</h2>
+  <p class="hint">这些格在试锁前向上、向下取整都可行；试锁后只剩唯一取法。</p>
+  <div class="table-wrap">
+  <table class="grid records">
+    <thead>
+      <tr><th>院系</th><th>科目</th><th>试锁前可取（万元）</th><th>试锁后唯一值（万元）</th></tr>
+    </thead>
+    <tbody>
+      {% for a in r.affected %}
+      <tr>
+        <th class="rowhead">{{ a.row_label }}</th>
+        <td>{{ a.col_label }}</td>
+        <td class="num">{{ a.floor }} 或 {{ a.ceil }}</td>
+        <td class="num"><strong>{{ a.unique }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="ok-banner">试锁该院系不会减少其他未锁定格的取整选择：原本两可的格在试锁后仍两可。</div>
+  {% endif %}
+
+  {% if v.alt %}
+  <h2>试锁前的另一种可行公示表（示例）</h2>
+  <p class="hint">下表为试锁前「{{ v.alt.row_label }}／{{ v.alt.col_label }}」取另一值
+    <strong>{{ v.alt.lost }} 万元</strong> 时的完整可行公示表，满足整表取整、横竖加平与已有锁定规则；
+    试锁后该格只能取唯一值，此表不再可行。</p>
+  {% if not v.alt.ok %}
+  <div class="flash error">示例表核对未通过：明细与合计不一致，请勿对外发布并联系管理员。</div>
+  {% endif %}
+  <div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="corner">院系 \ 科目</th>
+        {% for c in r.cols %}<th>{{ c.label }}</th>{% endfor %}
+        <th class="total-col">行小计</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in v.alt.matrix %}
+      <tr>
+        <th class="rowhead">{{ row.label }}{% if row.locked %}<span class="badge">已锁定</span>{% endif %}</th>
+        {% for cell in row.cells %}
+        <td class="num{{ ' picked' if cell.picked }}" data-alt-row="{{ row.key }}" data-alt-col="{{ cell.col_key }}">{{ cell.value }}</td>
+        {% endfor %}
+        <td class="num subtotal" data-alt-row-subtotal="{{ row.key }}">{{ row.subtotal }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <th class="rowhead">列小计</th>
+        {% for val in v.alt.col_totals %}<td class="num subtotal" data-alt-col-subtotal="{{ r.cols[loop.index0].key }}">{{ val }}</td>{% endfor %}
+        <td class="num grand" data-alt-grand-total>{{ v.alt.total }}</td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <a class="button" href="{{ url_for('statement_page') }}">返回公示表</a>
+  </div>
+</section>
+{% endblock %}

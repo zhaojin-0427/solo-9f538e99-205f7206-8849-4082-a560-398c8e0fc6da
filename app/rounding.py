@@ -124,11 +124,13 @@ def _is_nonneg_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
-def solve_display(cells, locks=None):
+def solve_display(cells, locks=None, forced=None):
     """求一张满足取整与横竖加平的公示表。
 
     cells: R 行 C 列的非负整数元。
     locks: {row_index: (subtotal_wan, [cell_wan, ...])}，锁定原值。
+    forced: {(row_index, col_index): cell_wan}，额外指定某未锁定格的取整结果
+        （试锁影响分析用）；取值非法、落在锁定行且不等于锁定值时返回 None。
     返回 dict(P, rows, cols, total)；无解返回 None。
     """
     if not cells or not cells[0]:
@@ -170,6 +172,32 @@ def solve_display(cells, locks=None):
         if row_sum != sub:
             return None
         locked_subtotal += sub
+
+    forced = forced or {}
+    forced_delta = {}
+    for key, v in forced.items():
+        if not isinstance(key, tuple) or len(key) != 2:
+            return None
+        i, j = key
+        if (not isinstance(i, int) or isinstance(i, bool)
+                or not isinstance(j, int) or isinstance(j, bool)
+                or i < 0 or i >= R or j < 0 or j >= C):
+            return None
+        if not _is_nonneg_int(v):
+            return None
+        if i in locks:
+            # 锁定行以锁定原值为准：一致则无需额外约束，矛盾则不可行
+            if locks[i][1][j] != v:
+                return None
+            continue
+        base_v = cells[i][j] // UNIT
+        if cells[i][j] % UNIT == 0:
+            if v != base_v:
+                return None
+            continue  # 整万格取整唯一，无需加约束
+        if v not in (base_v, base_v + 1):
+            return None
+        forced_delta[(i, j)] = v - base_v
 
     unlocked_rows = [i for i in range(R) if i not in locks]
     if not unlocked_rows:
@@ -229,8 +257,11 @@ def solve_display(cells, locks=None):
         for j in range(C):
             if rem[i][j] == 0:
                 continue
+            lo, hi = 0, 1
+            if (i, j) in forced_delta:
+                lo = hi = forced_delta[(i, j)]
             cell_edge_index[(i, j)] = len(edges)
-            edges.append((row_node[i], col_base + j, 0, 1))
+            edges.append((row_node[i], col_base + j, lo, hi))
     for j in range(C):
         fsum = sum(base[i][j] for i in unlocked_rows)
         lo = col_lo[j] - fsum
